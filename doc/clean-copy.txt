@@ -1,0 +1,238 @@
+*clean-copy.txt*  Copy selected code without removable comments
+
+                                   *clean-copy* *clean-copy.nvim*
+Requires Neovim 0.12+ and preinstalled Tree-sitter parsers.
+Tested on Linux / Neovim 0.12.5 / LuaJIT, 2026-10-01.
+
+CONTENTS
+    Usage              |clean-copy-usage|
+    Configuration      |clean-copy-config|
+    Preserved comments |clean-copy-preserve|
+    Languages          |clean-copy-languages|
+    Failures           |clean-copy-failures|
+    Development        |clean-copy-development|
+
+==============================================================================
+USAGE                                                   *clean-copy-usage*
+
+                                                          *:CleanCopy*
+:CleanCopy              Copy the entire current buffer, linewise.
+:[range]CleanCopy       Copy the explicit whole-line range, linewise.
+
+                                                     *clean_copy.copy()*
+require('clean_copy').copy()
+    Visual v: exact character selection; respect 'selection'.
+    Visual V: whole selected lines.
+    Normal: entire current buffer.
+    Visual CTRL-V: refuse with a short message.
+    Returns success, message and also calls vim.notify().
+
+No default mappings. Example: >lua
+    vim.keymap.set('x', '<leader>cy', function()
+      require('clean_copy').copy()
+    end, { desc = 'Copy without comments' })
+<
+Use this Lua callback for exact character selections. Visual ':' supplies
+'<,'> automatically, which is an explicit whole-line command range.
+
+On success, exit Visual and retain the cursor/last selection (gv).
+Visual virtual EOL positions clamp to the last character in Normal mode.
+Virtual cells without a reliable byte representation are refused.
+The buffer, changedtick, modified flag and undo history are not altered.
+Normal y/delete/cut are unchanged. No TextYankPost autocmd is installed.
+
+==============================================================================
+CONFIGURATION                                          *clean-copy-config*
+
+                                                    *clean_copy.setup()*
+>lua
+    require('clean_copy').setup({
+      register = '"',
+      clipboard = true,
+      remove_empty_comment_lines = true,
+      preserve_doc_comments = false,
+      preserve_license_comments = false,
+      preserve_directives = true,
+      directive_rules = {},
+      language_overrides = {},
+      debug = false,
+    })
+<
+setup() validates types and rejects unknown options. Repeated setup() starts
+from defaults, merges the given options and replaces the command without
+installing mappings or autocmds. Loading the plugin supplies the command even
+if setup() is omitted.
+
+register: a single ", a-z, 0-9, + or *; uppercase append targets are refused.
+The default unnamed write uses native Neovim behavior: register 0 is updated
+and the unnamed register points to 0. This is the agreed exception to register
+preservation. Other named/numbered/small-delete registers remain unchanged.
+A named target preserves the pointer; if it was already pointed to by the
+unnamed register, that register naturally reflects the new target content.
+
+clipboard: additionally send the result to + if a provider is available.
+With no provider, local copy succeeds and reports that + was not written.
+A +/* target itself still needs a provider even if clipboard=false.
+Provider exceptions report local success and clipboard failure. A success
+message means the provider accepted the write; asynchronous external failures
+are reported by Neovim/provider and cannot be guaranteed away by the plugin.
+Implicit 'clipboard' forwarding is temporarily suppressed and restored.
+
+remove_empty_comment_lines: remove only complete original lines containing
+removable comments and whitespace that become empty after transformation.
+Pre-existing empty/whitespace lines stay, as do lines with code or retained
+directives. Partially selected lines cannot qualify. Set false to retain the
+comment-derived whitespace lines and newlines.
+
+Ordinary comment segments become a separating space; non-comment characters,
+indentation and newlines are preserved. No formatting or global trimming.
+Comment-only JSX containers are removed without adding rendered whitespace.
+
+language_overrides: filetype -> Tree-sitter language/parser name. Otherwise use
+vim.treesitter.language.get_lang(); respect language.register(). Fallbacks
+apply only to unregistered cs, javascriptreact and typescriptreact filetypes.
+No extension-based parser guessing.
+
+directive_rules: a list of pure functions (text, language, TSNode) -> boolean.
+Called for recognized comments when preserve_directives is true. For example: >lua
+    directive_rules = {
+      function(text) return text:find('TEAM_KEEP', 1, true) ~= nil end,
+    }
+<
+Exceptions/non-boolean results stop copying. Callbacks must not edit buffers.
+debug=true includes diagnostic stack traces; ordinary messages remain short.
+
+==============================================================================
+PRESERVED COMMENTS                                   *clean-copy-preserve*
+
+Strings, quoted identifiers and Python docstrings are always retained.
+There is no option to remove Python docstrings. Shebangs are always retained.
+C/C++ and C# preprocessor directives are code, not removable comments.
+
+preserve_doc_comments=true retains C-family /** blocks, C/C++ Doxygen /// and
+//!, C# XML ///, Rust /// //! /** /*! and Lua --- documentation comments.
+
+preserve_license_comments=true recognizes SPDX-License-Identifier, copyright,
+@license, @preserve and /*! markers; this is not license-content verification.
+
+preserve_directives=true retains these tested finite marker families:
+  Go:          //go: directives and old // +build constraints.
+  JS/TS:       @ts-check, @ts-nocheck, @ts-ignore, @ts-expect-error;
+               triple-slash reference and amd directives.
+  Python:      type: ignore, noqa, first-two-line coding: / coding= declarations.
+  Tools:       clang-format off/on/disable/enable; prettier-ignore;
+               eslint/stylelint disable/enable; fmt off/on/skip;
+               isort off/on/skip; ruff: noqa; yapf disable/enable;
+               luacheck:; stylua: ignore; @formatter:off/on.
+  SQL:         /*! */, /*M! */ and /*+ */ retained as opaque text.
+
+Disabling preserve_directives permits removal of these tool/SQL comments.
+User rules extend retention; not every tool directive in existence is covered.
+
+==============================================================================
+LANGUAGES                                             *clean-copy-languages*
+
+Filetype                 Language / parser
+sql                      sql (DerekStride/tree-sitter-sql, not all dialects)
+c / cpp                  c / cpp
+javascript               javascript
+typescript               typescript
+javascriptreact          javascript (JSX is JavaScript syntax)
+typescriptreact          tsx
+rust / go / python       rust / go / python
+php                      php, plus html and any nested javascript/css
+cs                       c_sharp
+html / css / java / lua  html / css / java / lua
+vue                      vue + javascript/typescript/css as applicable
+
+All rows have real parser tests; the full matrix and parser revisions are in
+README.md and tests/parsers.lock.json. php_only has an additional pure-PHP
+test, but must not replace php for a mixed PHP+HTML file.
+
+HTML: <!-- -->; JS script and CSS style injection. Attribute values stay intact.
+PHP: //, #, /* */, heredoc/nowdoc, attributes, combined HTML regions and nested
+JS/CSS. Vue: HTML template comments, script, script setup, script lang="ts",
+script setup lang="ts", CSS style/scoped; template HTML is parsed by vue.
+Unknown script/style types or non-HTML Vue template languages are refused
+when relevant to the selection. SCSS/Less are outside this version.
+JSON/LD-JSON/importmap/speculationrules script data blocks stay unchanged.
+Vue template-expression comments, HTML event/style attributes and arbitrary
+tagged-template injections are not part of first-version coverage.
+Only AST-declared supported code regions are injected; ordinary strings are
+not reparsed. User highlighting/injection queries do not control deletion.
+
+JSX/TSX: remove a whole expression container only when every named child is a
+removable comment. Containers with real expressions or retained directives
+keep their braces. JSX text/attributes remain unchanged.
+
+SQL parser: DerekStride general/permissive grammar, locked gh-pages revision
+86e3d03837d282544439620eb74d224586074b8b. comment means --; marginalia means /* */.
+Tested PostgreSQL-compatible SELECT strings/quoted identifiers, doubled quote
+escapes, E strings, $$ and $tag$ strings. Tested MySQL-compatible backticks and
+retention of MySQL /*! */, MariaDB /*M! */ and optimizer /*+ */ hints. Contents
+of executable comments are not parsed. No database execution tests were run.
+MySQL # comments and nested SQL block comments are outside coverage. Complete
+PostgreSQL/MySQL/SQLite/SQL Server/Oracle support is not claimed; SQL Server
+brackets, Oracle q-quote and other dialect-specific forms are unverified.
+
+C/C++: an opaque preproc_arg may swallow // or misparse a macro string.
+Selected opaque macro arguments containing // or /* are conservatively refused,
+including macro URLs, rather than reporting partial comment removal.
+Normal preprocessor directives without these ambiguous markers are retained.
+
+Rust nested block comments, C++ raw strings, C# raw strings and Java text
+blocks are tested with the locked parsers. Python has no multi-line comment
+syntax; CSS has no // comment syntax. Strings stay strings.
+
+==============================================================================
+FAILURES                                               *clean-copy-failures*
+
+Parse an immutable snapshot of the entire original buffer, never only the
+selected fragment. Collect plugin-owned comment queries across the language
+tree, merge ranges, intersect byte ranges with the selection, then transform.
+Missing selected embedded parsers stop the whole copy; missing parsers in
+unrelated embedded regions need not block another selection.
+
+ERROR/MISSING nodes intersecting the selection or a relevant removable comment
+range stop copying. Zero-width missing nodes touching a selection boundary
+also stop. Errors elsewhere do not unconditionally block valid selections.
+There is no regex fallback. The goal is reliable removal of supported comments,
+not a proof of equivalent execution in every language/tool environment.
+
+Before touching any register, finish parsing, queries, conversion, nonempty
+validation and changedtick validation. Missing/incompatible parsers, query
+failure, unsupported selection/language, selected syntax errors, or empty /
+whitespace output leave old register contents intact. Failure keeps Visual
+active. Short notifications identify the failing step or missing parser.
+
+==============================================================================
+DEVELOPMENT                                          *clean-copy-development*
+
+The plugin runtime requires only Neovim, with parsers installed in advance.
+Explicit developer parser installation uses Python 3.12+, curl and a C compiler:
+>
+    make test-parsers
+    make test
+<
+Parsers are built in ignored .test/runtime/parser; no user parser installation
+or running Neovim session is touched. Tests use isolated XDG directories.
+79 primary tests plus 5 fresh-process missing-parser tests passed on 2026-10-01.
+Desktop clipboard end-to-end behavior is not tested; tests use a private fake
+provider to avoid overwriting the personal system clipboard.
+
+For lazy.nvim local development: >lua
+    {
+      dir = vim.fn.expand('~/Projects/clean-copy.nvim'),
+      name = 'clean-copy.nvim',
+      cmd = 'CleanCopy',
+      keys = {
+        { '<leader>cy', function() require('clean_copy').copy() end,
+          mode = 'x', desc = 'Copy without comments' },
+      },
+      opts = {},
+    }
+<
+Dotfiles should only load the independent repository and configure personal
+keys. See README.md for this machine's concrete integration paths.
+
+vim:tw=78:ts=8:ft=help:norl:

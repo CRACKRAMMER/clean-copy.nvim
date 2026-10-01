@@ -1,0 +1,6 @@
+.test/
+doc/tags
+*.so
+*.dll
+*.dylib
+__pycache__/
