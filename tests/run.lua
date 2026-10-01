@@ -114,6 +114,45 @@ end)
 test('PHP-only parser', function()
   eq(clean('$a="/* string */"; // remove', 'php_only'), '$a="/* string */";  ')
 end)
+local sql_blocks = 'select *\nfrom tmp_table -- tmp1\n-- where \n\nselect *\nfrom tmp_table -- tmp2'
+test('SQL single statement with trailing comment before missing batch separator', function()
+  local snap = snapshot(sql_blocks)
+  eq(clean(sql_blocks, 'sql', nil, selection.lines(snap, 1, 3)), 'select *\nfrom tmp_table  ')
+  eq(clean(sql_blocks, 'sql', nil, selection.lines(snap, 1, 4)), 'select *\nfrom tmp_table  \n')
+  eq(clean(sql_blocks, 'sql', nil, selection.lines(snap, 5, 6)), 'select *\nfrom tmp_table  ')
+end)
+test('SQL missing separator still blocks copying both statements', function()
+  local ok, err = pcall(clean, sql_blocks, 'sql')
+  assert(not ok and err:find('ERROR/MISSING', 1, true), tostring(err))
+  assert(err:find('missing ; at 3:10', 1, true), tostring(err))
+end)
+test('SQL separator exception preserves full-buffer string context', function()
+  local text = "select $tag$中文 -- /* string */$tag$, 'select -- string'\n"
+    .. 'from tmp_table -- tmp1\n-- where\n\nselect * from other_table -- tmp2'
+  local snap = snapshot(text)
+  eq(clean(text, 'sql', nil, selection.lines(snap, 1, 3)),
+    "select $tag$中文 -- /* string */$tag$, 'select -- string'\nfrom tmp_table  ")
+end)
+test('SQL selected actual errors remain blocked with adjacent statements', function()
+  for _, text in ipairs({'select * from ; -- bad\n\nselect * from tmp_table;',
+    'select * from tmp_table;\n\nselect * from ; -- bad',
+    'BEGIN\nselect * from tmp_table -- first\nselect * from tmp_table;\nEND;'}) do
+    local ok, err = pcall(clean, text, 'sql')
+    assert(not ok and err:find('ERROR/MISSING', 1, true), tostring(err))
+  end
+end)
+test('SQL separator exemption does not apply inside blocks', function()
+  local text = 'BEGIN\nselect * from tmp_table -- first\nselect * from tmp_table;\nEND;'
+  local snap = snapshot(text)
+  local ok, err = pcall(clean, text, 'sql', nil, selection.lines(snap, 2, 2))
+  assert(not ok and err:find('ERROR/MISSING', 1, true), tostring(err))
+end)
+test('missing semicolon in selected C statement is still rejected', function()
+  local text = 'int x=1 // comment\nint y=2;'
+  local snap = snapshot(text)
+  local ok, err = pcall(clean, text, 'c', nil, selection.lines(snap, 1, 1))
+  assert(not ok and err:find('missing ;', 1, true), tostring(err))
+end)
 
 local plugin = require('clean_copy')
 local registers = require('clean_copy.registers')
@@ -147,6 +186,27 @@ test('normal copy whole buffer', function()
   assert(plugin.copy())
   eq(vim.fn.getreg('a'), 'local a=1  \n')
 end)
+test('SQL line command copies one block and refuses whole invalid batch without writes', function()
+  buffer(sql_blocks, 'sql')
+  local tick, original = vim.api.nvim_buf_get_changedtick(0), vim.api.nvim_buf_get_lines(0, 0, -1, true)
+  vim.cmd('1,3CleanCopy')
+  eq(vim.fn.getreg('a'), 'select *\nfrom tmp_table  \n')
+  eq(vim.fn.getregtype('a'), 'V')
+  vim.fn.setreg('a', 'sentinel')
+  assert(not plugin.copy()); eq(vim.fn.getreg('a'), 'sentinel')
+  eq(vim.api.nvim_buf_get_changedtick(0), tick)
+  eq(vim.api.nvim_buf_get_lines(0, 0, -1, true), original)
+end)
+for _, motion in ipairs({'ggV2j', 'gg2jVgg', 'gg0v2j$', 'gg2j$vgg0'}) do
+  test('SQL single block native Visual selection ' .. motion, function()
+    buffer(sql_blocks, 'sql'); keys(motion)
+    local kind = vim.fn.mode()
+    assert(plugin.copy(), messages[#messages])
+    eq(vim.fn.getreg('a'), 'select *\nfrom tmp_table  ' .. (kind == 'V' and '\n' or ''))
+    eq(vim.fn.getregtype('a'), kind)
+    eq(vim.fn.mode(), 'n')
+  end)
+end
 for _, seltype in ipairs({'inclusive', 'exclusive', 'old'}) do
   for _, motion in ipairs({'gg0v5l', 'gg05lv5h', 'gg0v$', 'gg0vj3l', 'gg0vjj$', 'gg0v', 'gg0v2l', 'gg0v2j0'}) do
     test('native Visual bytes ' .. seltype .. ' ' .. motion, function()

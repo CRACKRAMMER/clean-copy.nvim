@@ -196,6 +196,13 @@ unrelated embedded regions need not block another selection.
 ERROR/MISSING nodes intersecting the selection or a relevant removable comment
 range stop copying. Zero-width missing nodes touching a selection boundary
 also stop. Errors elsewhere do not unconditionally block valid selections.
+SQL exception: this parser can insert MISSING ";" after trailing comment extras
+between two error-free top-level statement nodes. If the selection intersects
+only one of those statements, that batch separator does not block copying.
+Selections containing both statements, missing separators inside BEGIN blocks,
+and other relevant errors still stop. Full-buffer parsing remains unchanged;
+no separator is added to the source or output and no fragment is reparsed.
+Error messages include node type and original 1-based row / byte column.
 There is no regex fallback. The goal is reliable removal of supported comments,
 not a proof of equivalent execution in every language/tool environment.
 
@@ -216,7 +223,7 @@ Explicit developer parser installation uses Python 3.12+, curl and a C compiler:
 <
 Parsers are built in ignored .test/runtime/parser; no user parser installation
 or running Neovim session is touched. Tests use isolated XDG directories.
-79 primary tests plus 5 fresh-process missing-parser tests passed on 2026-10-01.
+90 primary tests plus 5 fresh-process missing-parser tests passed on 2026-10-02.
 Desktop clipboard end-to-end behavior is not tested; tests use a private fake
 provider to avoid overwriting the personal system clipboard.
 

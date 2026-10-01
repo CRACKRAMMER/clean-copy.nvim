@@ -1,5 +1,6 @@
 local selection = require('clean_copy.selection')
 local rules = require('clean_copy.rules')
+local sql = require('clean_copy.sql')
 local M = {}
 local root_dir = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
 local supported = { sql = true, c = true, cpp = true, typescript = true, javascript = true,
@@ -197,7 +198,7 @@ function M.collect(snapshot, sel, lang, opts)
       if tree:root():has_error() then
         walk(tree:root(), function(node)
           if node:type() == 'ERROR' or node:missing() then
-            errors[#errors + 1] = { range = range(node, snapshot), lang = language }
+            errors[#errors + 1] = { range = range(node, snapshot), lang = language, node = node }
           end
         end)
       end
@@ -234,7 +235,12 @@ function M.collect(snapshot, sel, lang, opts)
       for _, r in ipairs(filtered) do
         if overlaps(r, sel) and overlaps(err.range, { start = r[1], finish = r[2] }) then affected = true end
       end
-      if affected then error('syntax ERROR/MISSING in selected region (' .. err.lang .. ')', 0) end
+      if affected and not (err.lang == 'sql' and sql.unselected_separator(err.node, snapshot, sel)) then
+        local row, col = err.node:range()
+        local detail = err.node:missing() and ('missing ' .. err.node:type()) or 'ERROR'
+        error(string.format('syntax ERROR/MISSING in selected region (%s), %s at %d:%d',
+          err.lang, detail, row + 1, col + 1), 0)
+      end
     end
     return filtered
   end
