@@ -303,8 +303,9 @@ SCSS/Less、所有 SQL 方言、所有工具指令及上述 parser 局限。
 
 已在 `lua/plugins/treesitter.lua` 的 parser 列表补齐 `sql`、`go`、`php`、`php_only`、
 `c_sharp`、`java`、`vue`；现有 c/cpp/css/html/javascript/lua/python/rust/tsx/typescript 已列入安装清单，
-但本次检查时个人 parser 目录为空。随后**显式**执行 `:DotfilesTSInstall`。
-额外的 FileType 高亮清单可补 `sql`、`go`、`php`、`cs`、`java`、`vue`、`javascriptreact`；
+本次已把 17 个固定版本、通过测试的 parser 安装到个人 `site/parser` 目录。
+新机器可在具备 nvim-treesitter 安装工具要求后**显式**执行 `:DotfilesTSInstall`。
+FileType 高亮清单也已补齐 `sql`、`go`、`php`、`cs`、`java`、`vue`、`javascriptreact`；
 这是可选高亮配置，clean-copy 本身不依赖该 autocmd。
 
 远程仓库：[CRACKRAMMER/clean-copy.nvim](https://github.com/CRACKRAMMER/clean-copy.nvim)。
