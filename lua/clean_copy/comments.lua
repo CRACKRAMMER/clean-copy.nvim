@@ -232,7 +232,8 @@ function M.collect(snapshot, sel, lang, opts)
     end)
   end
   local function run()
-    -- Parse a snapshot of the ENTIRE original buffer, never the selected fragment.
+    -- Parse the entire snapshot, never the selected fragment. SQL predicate
+    -- templates use equal-length surrogates; captures still read original text.
     -- Private injection queries keep user highlighting and string injections out of this operation.
     local initial
     if lang == 'html' or lang == 'vue' or lang == 'php' then
@@ -274,7 +275,9 @@ function M.collect(snapshot, sel, lang, opts)
         end
       end
     end
-    local complete = parser(snapshot.text, lang, injections)
+    local source, templates = snapshot.text, {}
+    if lang == 'sql' then source, templates = sql.parser_view(source) end
+    local complete = parser(source, lang, injections)
     local removals, protected, containers, syntax_errors = {}, {}, {}, {}
     complete:for_each_tree(function(tree, ltree)
       local language = ltree:lang()
@@ -288,6 +291,7 @@ function M.collect(snapshot, sel, lang, opts)
       end
       if language == lang then relevant = true end
       if not relevant then return end
+      if language == 'sql' then sql.validate_templates(tree:root(), snapshot, templates, sel) end
       captures(tree, language, 'clean_copy', function(capture, node)
         local r = range(node, snapshot)
         if not overlaps(r, sel) then return end
@@ -397,7 +401,9 @@ function M.collect(snapshot, sel, lang, opts)
         errors.raise('SYNTAX', 'parser', string.format('syntax ERROR/MISSING in selected region (%s), %s at %d:%d',
           err.lang, detail, row + 1, col + 1), {
           context = { language = err.lang, row = row + 1, col = col + 1, node = detail },
-          hint = 'Fix the selected syntax or choose an error-free region; verify the parser supports this syntax.',
+          hint = err.lang == 'sql'
+            and 'Check whether the installed SQL parser supports this dialect, fix the syntax, or select an error-free region.'
+            or 'Fix the selected syntax or choose an error-free region; verify the parser supports this syntax.',
         })
       end
     end

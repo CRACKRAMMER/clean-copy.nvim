@@ -12,8 +12,56 @@ local registers = require('clean_copy.registers')
 local comments = require('clean_copy.comments')
 local rules = require('clean_copy.rules')
 local plugin = require('clean_copy')
+local sql = require('clean_copy.sql')
 local messages = {}
 vim.notify = function(message, level) messages[#messages + 1] = { message, level } end
+
+test('SQL parser view preserves byte coordinates and template text outside the view', function()
+  local a, b = '{event_day [conditions.date(number)]}', '{page [conditions.page]}'
+  local text = 'SELECT \'中文\' FROM t\nWHERE ' .. a .. ' AND ' .. b .. ';'
+  local view, templates = sql.parser_view(text)
+  eq(view, text:gsub(a:gsub('(%W)', '%%%1'), 'TRUE' .. string.rep(' ', #a - 4))
+    :gsub(b:gsub('(%W)', '%%%1'), 'TRUE' .. string.rep(' ', #b - 4)))
+  eq(#view, #text)
+  eq(#templates, 2)
+  for _, template in ipairs(templates) do
+    eq(view:sub(template.start + 1, template.start + 4), 'TRUE')
+    assert(text:sub(template.start + 1, template.finish):match('^%{.*%}$'))
+  end
+end)
+
+test('SQL parser view skips quoted identifiers, strings and comments', function()
+  local macro = '{x [conditions.x]}'
+  for _, text in ipairs({
+    "SELECT 'it''s " .. macro .. "';", 'SELECT "a""' .. macro .. '";',
+    'SELECT `a``' .. macro .. '`;', "SELECT E'it\\'s " .. macro .. "';",
+    'SELECT $tag$' .. macro .. '$tag$;', 'SELECT $$' .. macro .. '$$;',
+    '-- ' .. macro .. '\nSELECT 1;', '/* ' .. macro .. ' */ SELECT 1;',
+    '/* outer /* nested */ ' .. macro .. ' */ SELECT 1;', '# ' .. macro .. '\nSELECT 1;',
+  }) do
+    local view, templates = sql.parser_view(text)
+    eq(view, text); eq(#templates, 0)
+  end
+end)
+
+test('SQL parser view does not recover unterminated lexical constructs', function()
+  for _, prefix in ipairs({ "SELECT '", 'SELECT "', 'SELECT `', 'SELECT $$', 'SELECT $tag$', '/* ' }) do
+    local text = prefix .. '{x [conditions.x]}'
+    local view, templates = sql.parser_view(text)
+    eq(view, text); eq(#templates, 0)
+  end
+end)
+
+test('SQL parser view rejects unknown modifiers, nesting and hidden comment payloads', function()
+  for _, template in ipairs({ '{x [conditions.x(foo)]}', '{x [conditions.x(1)]}',
+    '{x [other.x]}', '{DATE}', '{x [conditions.x] -- hidden\n}',
+    '{x [conditions.x] /* hidden */}', '{{x [conditions.x]}}',
+    '{outer {x [conditions.x]}}', '{x [conditions.x] {y [conditions.y]}}' }) do
+    local text = 'SELECT * FROM t WHERE ' .. template .. ';'
+    local view, templates = sql.parser_view(text)
+    eq(view, text); eq(#templates, 0)
+  end
+end)
 
 local function opts(extra)
   return config.resolve(vim.tbl_extend('force', { register = 'a', clipboard = false }, extra or {}))

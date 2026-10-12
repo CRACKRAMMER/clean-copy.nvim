@@ -219,13 +219,15 @@ The suite contains real-parser fixtures for the rows below. Coverage describes e
 | `php` | `php` | Comments, heredoc/nowdoc, attributes, HTML and nested JS/CSS |
 | Explicit override | `php_only` | Pure PHP; not suitable for PHP+HTML files |
 | `vue` | `vue` | HTML template comments, JS/TS script/setup, CSS style/scoped |
-| `sql` | `sql` | Selected PostgreSQL/MySQL-compatible syntax; see limitations below |
+| `sql` | `sql` | Selected SQL syntax and BI condition templates; see limitations below |
 
 The plugin respects `vim.treesitter.language.register()`. Fallback mappings for unregistered `cs`, `javascriptreact`, and `typescriptreact` are shown above. It does not guess parsers from filenames. Use `language_overrides` when a filetype needs an explicit supported parser, for example `{ php = "php" }` for mixed PHP.
 
 HTML requires `html` plus parsers for selected JS/CSS regions. Mixed PHP additionally requires `php`; Vue requires `vue` and selected `javascript`, `typescript`, or `css` parsers. Missing parsers or unsupported syntax in a selected embedded region stop the entire copy. Unrelated unavailable embedded parsers need not block a different selection.
 
 Script handling supports JavaScript/module MIME types and `lang="js"`/`lang="ts"`; style handling supports CSS. JSON, LD-JSON, importmap, and speculationrules data blocks remain unchanged. Unknown script/style types, SCSS/Less, and non-HTML Vue templates are rejected when relevant.
+
+SQL BI condition templates support the precise forms `{identifier [conditions.identifier]}` and `{identifier [conditions.identifier(number)]}` as boolean predicates in `WHERE`, `HAVING`, and `JOIN ON`, including `AND`/`OR`/`NOT` and parentheses. The temporary parser view substitutes `TRUE` for recognized templates; copied text preserves the original template unchanged. Templates in strings/comments are left alone; unknown template forms and nonpredicate positions remain unsupported. Template expansion is neither executed nor validated. SQL strings and `COMMENT` clauses are code rather than removable comments; unsupported syntax still stops copying.
 
 ## Examples
 
@@ -296,6 +298,7 @@ The returned `report` contains `code`, `stage`, `message`, `level`, and applicab
 - C/C++ opaque macro arguments containing `//` or `/*` are conservatively rejected, including URL-like macro strings.
 - HTML/Vue comment removal that could join a character entity is rejected. Preserve an involved comment with `directive_rules` or select a different region. JSX containers retain braces when removal could alter text/entity boundaries.
 - SQL uses the intended locked [DerekStride/tree-sitter-sql](https://github.com/DerekStride/tree-sitter-sql) grammar. Tests cover selected SELECT syntax, quoted identifiers, doubled quotes, PostgreSQL E/dollar strings, MySQL backticks, and special-comment retention; they do not execute queries against databases. MySQL `#` comments and nested SQL block comments are unsupported. Complete SQL dialect coverage, SQL Server bracket identifiers, and Oracle q-quotes are unverified.
+- The current SQL grammar rejects Doris/Palo `DUPLICATE KEY`, table `COMMENT`, partition definitions using `[lower, upper)` intervals, `DISTRIBUTED`, `PROPERTIES`, and `SHOW ALTER TABLE`. Known rejected Hive forms include multi-column `AS` aliases for `stack`, `RLIKE`, `<=>`, `INSERT OVERWRITE`, and some unary-negative function arguments. Other Hive-compatible syntax can still copy when the grammar parses it.
 - A narrow SQL exception permits selecting one error-free top-level statement when the parser inserts a missing batch semicolon between it and another statement. Selecting both statements or a missing separator inside a block still fails. No semicolon is inserted and no fragment is reparsed.
 - Directive recognition is finite. Correct deletion with supported syntax is not a proof of equivalent behavior under every compiler or external tool.
 - Older Neovim versions, other parser revisions/platforms, and desktop clipboard services need separate verification.
@@ -313,9 +316,12 @@ For a focused run:
 ```sh
 make test-unit         # No parser binaries required
 make test-integration  # Requires project test parsers
+make test-fixtures     # Optional local SQL fixture audit
 ```
 
 `make test` runs both groups. Integration tests first check the project runtime and fail with an actionable list if parsers are missing; dependencies are never installed automatically and valid assertions are not skipped.
+
+`make test-fixtures` reads optional local `fixtures/sql/*.sql` files after the isolated SQL parser has been prepared. This directory is ignored by Git, and the standard `make test` does not depend on it. The audit checks comment removal, retained SQL tokens/templates, and register/buffer protection; it does not run SQL against a database or validate template expansion. Reports are written to `.test/local-fixtures/report.json`, with successful cleaned copies under `.test/local-fixtures/cleaned/`. Missing fixtures or any failed file produce a nonzero exit status.
 
 `make test` and `make test-unit` also require Python 3.12+ for standard-library installer tests. Installer tests mock downloads and compilation; `CopyCleanParsers` tests mock the backend and CLI, exercising validation, repair, asynchronous execution, busy state, and failures offline. Tests run headless Neovim with isolated XDG directories and parsers under ignored `.test/runtime/parser/`. They cover transformations, real parsers, command loading/conflicts, selections, register protection, configuration, diagnostics, documentation, and missing-parser processes. Clipboard tests use a private provider and do not touch the desktop clipboard or personal Neovim configuration.
 

@@ -147,6 +147,43 @@ test('SQL separator exemption does not apply inside blocks', function()
   local ok, err = pcall(clean, text, 'sql', nil, selection.lines(snap, 2, 2))
   assert(not ok and tostring(err):find('ERROR/MISSING', 1, true), tostring(err))
 end)
+test('SQL condition templates retain original text, strings and byte-aligned comments', function()
+  local text = "SELECT '中文 {x [conditions.x]}', '{DATE}', '{}' FROM t\n"
+    .. 'WHERE {day [conditions.date(number)]} AND ({page [conditions.page]} OR NOT {site [conditions.site]}); -- remove'
+  eq(clean(text, 'sql'), text:gsub('%-%- remove$', ' '))
+end)
+test('SQL condition templates support WHERE, HAVING and JOIN ON boolean expressions', function()
+  for _, text in ipairs({
+    'SELECT x FROM t WHERE {x [conditions.x]};',
+    'SELECT x FROM t WHERE NOT ({x [conditions.x]} OR {y [conditions.y]});',
+    'SELECT x, COUNT(*) FROM t GROUP BY x HAVING {n [conditions.n(number)]};',
+    'SELECT x FROM t JOIN u ON ({id [conditions.id]} AND t.id=u.id);',
+  }) do eq(clean(text .. ' -- remove', 'sql'), text .. '  ') end
+end)
+test('SQL condition templates cannot hide invalid source syntax or unknown templates', function()
+  for _, text in ipairs({
+    'SELECT * FROM t WHERE {x [conditions.x]} AND ;',
+    'SELECT * FROM t WHERE {x [conditions.x(foo)]};',
+    'SELECT * FROM t WHERE {x [conditions.x] /* hidden */};',
+    'SELECT * FROM t WHERE {{x [conditions.x]}};',
+    'SELECT * FROM t WHERE {x [conditions.x] -- hidden\n};',
+  }) do
+    local ok, report = pcall(clean, text, 'sql')
+    assert(not ok, text); eq(report.code, 'SYNTAX')
+  end
+end)
+test('SQL condition templates reject nonpredicate positions accepted by surrogate grammar', function()
+  local macro = '{x [conditions.x]}'
+  for _, text in ipairs({ 'SELECT ' .. macro .. ';', 'SELECT x FROM ' .. macro .. ';',
+    'SELECT x AS ' .. macro .. ' FROM t;', 'SELECT x FROM t LIMIT ' .. macro .. ';',
+    'SELECT x FROM t WHERE f(' .. macro .. ');', 'SELECT x FROM t WHERE x=' .. macro .. ';',
+    'SELECT x FROM t WHERE x' .. macro .. ';', 'SELECT x FROM t ORDER BY ' .. macro .. ';',
+    'SELECT x FROM t WHERE CASE WHEN x=1 THEN ' .. macro .. ' ELSE FALSE END;' }) do
+    local ok, report = pcall(clean, text, 'sql')
+    assert(not ok, text); eq(report.code, 'SYNTAX')
+    assert(report.message:find('condition template', 1, true), report.message)
+  end
+end)
 test('missing semicolon in selected C statement is still rejected', function()
   local text = 'int x=1 // comment\nint y=2;'
   local snap = snapshot(text)
@@ -196,6 +233,47 @@ test('SQL line command copies one block and refuses whole invalid batch without 
   assert(not plugin.copy()); eq(vim.fn.getreg('a'), 'sentinel')
   eq(vim.api.nvim_buf_get_changedtick(0), tick)
   eq(vim.api.nvim_buf_get_lines(0, 0, -1, true), original)
+end)
+test('SQL condition template command keeps source and linewise register behavior', function()
+  local text = '-- remove\nSELECT x FROM t WHERE {x [conditions.x]}; -- remove'
+  buffer(text, 'sql')
+  local tick, undo = vim.api.nvim_buf_get_changedtick(0), vim.fn.undotree()
+  vim.cmd.CopyClean()
+  eq(vim.fn.getreg('a'), 'SELECT x FROM t WHERE {x [conditions.x]};  \n')
+  eq(vim.fn.getregtype('a'), 'V')
+  eq(vim.api.nvim_buf_get_changedtick(0), tick)
+  eq(vim.fn.undotree(), undo)
+  eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text)
+end)
+test('SQL parser dialect limitations report WARN and protect buffer and registers', function()
+  for _, text in ipairs({
+    'CREATE TABLE demo (id BIGINT) ENGINE=OLAP DUPLICATE KEY(id);',
+    'CREATE TABLE demo (id BIGINT) ENGINE=OLAP COMMENT "docs";',
+    'CREATE TABLE demo (id BIGINT) PARTITION BY RANGE(id) (PARTITION p1 VALUES [("1"),("2")));',
+    'CREATE TABLE demo (id BIGINT) DISTRIBUTED BY HASH(id) BUCKETS 1;',
+    'CREATE TABLE demo (id BIGINT) PROPERTIES ("replication_num"="1");',
+    "SHOW ALTER TABLE COLUMN WHERE TableName='demo';",
+    "SELECT stack(2,'a',1,'b',2) AS (name,count);",
+    "SELECT x FROM t WHERE x RLIKE 'a';", 'SELECT x FROM t JOIN u ON t.x <=> u.x;',
+    'SELECT f(-a) FROM t;', 'INSERT OVERWRITE TABLE t SELECT 1;',
+  }) do
+    buffer(text .. ' -- remove', 'sql')
+    vim.fn.setreg('a', 'sentinel', 'v')
+    local before, tick, undo = vim.fn.getreginfo('a'), vim.api.nvim_buf_get_changedtick(0), vim.fn.undotree()
+    local count = #messages
+    local ok, _, report = plugin.copy()
+    assert(not ok, text); eq(report.code, 'SYNTAX'); eq(report.level, vim.log.levels.WARN)
+    eq(#messages, count + 1); eq(vim.fn.getreginfo('a'), before)
+    eq(vim.api.nvim_buf_get_changedtick(0), tick); eq(vim.fn.undotree(), undo)
+    eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text .. ' -- remove')
+  end
+end)
+test('SQL Hive DDL and column COMMENT clauses remain code', function()
+  local text = "CREATE TABLE demo (id STRING COMMENT '-- text', value BIGINT COMMENT '/* text */')\n"
+    .. "PARTITIONED BY (day BIGINT COMMENT 'partition') STORED AS PARQUET;"
+  eq(clean(text .. ' -- remove', 'sql'), text .. '  ')
+  local alter = "ALTER TABLE demo ADD COLUMN value DOUBLE NULL COMMENT '/* text */' AFTER id;"
+  eq(clean(alter .. ' -- remove', 'sql'), alter .. '  ')
 end)
 for _, motion in ipairs({'ggV2j', 'gg2jVgg', 'gg0v2j$', 'gg2j$vgg0'}) do
   test('SQL single block native Visual selection ' .. motion, function()

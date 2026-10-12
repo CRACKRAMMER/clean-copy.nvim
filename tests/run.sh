@@ -9,9 +9,12 @@ export XDG_CACHE_HOME="$PWD/.test/xdg/cache"
 export NVIM_LOG_FILE="$PWD/.test/nvim.log"
 mode="${1:-all}"
 case "$mode" in
-  all|unit|integration) ;;
-  *) echo "usage: tests/run.sh [all|unit|integration]" >&2; exit 2 ;;
+  all|unit|integration|fixtures) ;;
+  *) echo "usage: tests/run.sh [all|unit|integration|fixtures]" >&2; exit 2 ;;
 esac
+if [ "$mode" = fixtures ]; then
+  exec nvim --clean --headless -l tests/local_fixtures.lua
+fi
 if [ "$mode" != integration ]; then
   python3 tests/test_install_parsers.py
   nvim --clean --headless -l tests/unit.lua

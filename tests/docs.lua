@@ -39,6 +39,25 @@ h.test('parser command documentation matches defaults and optional dependencies'
   assert(readme:find('cmd = { "CopyClean", "CopyCleanParsers" }', 1, true), 'lazy command list is incomplete')
 end)
 
+h.test('SQL template and local fixture documentation agrees across README and help', function()
+  for _, text in ipairs({readme, help}) do
+    for _, required in ipairs({'{identifier [conditions.identifier]}',
+      '{identifier [conditions.identifier(number)]}', 'make test-fixtures',
+      'fixtures/sql/*.sql', '.test/local-fixtures/report.json',
+      '.test/local-fixtures/cleaned/', 'DUPLICATE KEY', 'SHOW ALTER TABLE',
+      'RLIKE', '<=>', 'INSERT OVERWRITE'}) do
+      assert(text:find(required, 1, true), 'SQL documentation omits ' .. required)
+    end
+    local normalized = text:gsub('`', ''):gsub('%s+', ' ')
+    for _, required in ipairs({'temporary parser view substitutes TRUE',
+      'preserves the original template unchanged',
+      'Template expansion is neither executed nor validated',
+      'SQL strings and COMMENT clauses are code', 'nonzero exit status'}) do
+      assert(normalized:find(required, 1, true), 'SQL documentation omits ' .. required)
+    end
+  end
+end)
+
 h.test('native help tags resolve the new command and plugin entry point', function()
   vim.cmd.helptags('doc')
   for _, topic in ipairs({'clean-copy', 'CopyClean', 'CopyCleanParsers', 'clean-copy-parsers'}) do

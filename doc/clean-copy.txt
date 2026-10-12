@@ -329,6 +329,24 @@ SQL
     Complete dialect support, SQL Server brackets and Oracle q-quotes are
     unverified.
 
+    BI condition templates support these precise forms:
+        {identifier [conditions.identifier]}
+        {identifier [conditions.identifier(number)]}
+    Use them as boolean predicates in WHERE, HAVING and JOIN ON, joined with
+    AND/OR/NOT or parentheses. Templates in strings/comments are left alone;
+    unknown forms and nonpredicate positions remain unsupported.
+    The temporary parser view substitutes TRUE for recognized templates;
+    copied text preserves the original template unchanged. Template expansion
+    is neither executed nor validated. SQL strings and COMMENT clauses are
+    code rather than removable comments; unsupported syntax stops copying.
+
+    The current grammar rejects Doris/Palo DUPLICATE KEY, table COMMENT,
+    partition definitions using [lower, upper) intervals, DISTRIBUTED,
+    PROPERTIES and SHOW ALTER TABLE. Known
+    rejected Hive forms include multi-column AS aliases for stack, RLIKE,
+    <=>, INSERT OVERWRITE and some unary-negative function arguments. Other
+    Hive-compatible syntax can still copy when the grammar parses it.
+
 C/C++
     Selected opaque preproc_arg nodes containing // or /* are conservatively
     refused, including macro URLs, because the parser can hide/misparse them.
@@ -396,11 +414,22 @@ With the test parsers already prepared: >
 Focused runs: >
     make test-unit
     make test-integration
+    make test-fixtures
 <
 Unit tests require no parser binaries. Integration tests require project test
 parsers; a preflight check fails with a clear dependency list when missing.
 make test runs both groups. No dependencies are installed automatically, and
 valid assertions are not skipped to accommodate missing parsers.
+
+make test-fixtures reads optional local fixtures/sql/*.sql files after the
+isolated SQL parser has been prepared. This directory is ignored by Git;
+standard make test does not depend on it. The audit checks comment removal,
+retained SQL tokens/templates and register/buffer protection. It does not run
+SQL against a database or validate template expansion. Reports are written to
+.test/local-fixtures/report.json; successful cleaned copies are saved under
+.test/local-fixtures/cleaned/. Missing fixtures or any failed file produce a
+nonzero exit status.
+
 make test and make test-unit also need Python 3.12+ for standard-library
 installer tests with downloads and compilation mocked.
 CopyCleanParsers tests mock the backend and CLI to check validation, repair,

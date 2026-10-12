@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration test-parsers
+.PHONY: test test-unit test-integration test-parsers test-fixtures
 test:
 	sh tests/run.sh
 test-unit:
@@ -7,3 +7,5 @@ test-integration:
 	sh tests/run.sh integration
 test-parsers:
 	python3 tests/install_parsers.py
+test-fixtures:
+	sh tests/run.sh fixtures
