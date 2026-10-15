@@ -219,7 +219,7 @@ The suite contains real-parser fixtures for the rows below. Coverage describes e
 | `php` | `php` | Comments, heredoc/nowdoc, attributes, HTML and nested JS/CSS |
 | Explicit override | `php_only` | Pure PHP; not suitable for PHP+HTML files |
 | `vue` | `vue` | HTML template comments, JS/TS script/setup, CSS style/scoped |
-| `sql` | `sql` | Selected SQL syntax and BI condition templates; see limitations below |
+| `sql` | `sql` | Selected PostgreSQL/MySQL syntax, finite Hive/Doris extensions, and BI condition templates |
 
 The plugin respects `vim.treesitter.language.register()`. Fallback mappings for unregistered `cs`, `javascriptreact`, and `typescriptreact` are shown above. It does not guess parsers from filenames. Use `language_overrides` when a filetype needs an explicit supported parser, for example `{ php = "php" }` for mixed PHP.
 
@@ -227,9 +227,26 @@ HTML requires `html` plus parsers for selected JS/CSS regions. Mixed PHP additio
 
 Script handling supports JavaScript/module MIME types and `lang="js"`/`lang="ts"`; style handling supports CSS. JSON, LD-JSON, importmap, and speculationrules data blocks remain unchanged. Unknown script/style types, SCSS/Less, and non-HTML Vue templates are rejected when relevant.
 
-SQL BI condition templates support the precise forms `{identifier [conditions.identifier]}` and `{identifier [conditions.identifier(number)]}` as boolean predicates in `WHERE`, `HAVING`, and `JOIN ON`, including `AND`/`OR`/`NOT` and parentheses. The temporary parser view substitutes `TRUE` for recognized templates; copied text preserves the original template unchanged. Templates in strings/comments are left alone; unknown template forms and nonpredicate positions remain unsupported. Template expansion is neither executed nor validated. SQL strings and `COMMENT` clauses are code rather than removable comments; unsupported syntax still stops copying.
+### SQL support
 
-The parser recognizes multiline `stack(...)` calls, including comments between arguments. Hive's multi-column `AS (col1, col2, ...)` aliases remain unsupported in both single-line and multiline queries.
+SQL BI condition templates support the precise forms `{identifier [conditions.identifier]}` and `{identifier [conditions.identifier(number)]}` as boolean predicates in `WHERE`, `HAVING`, and `JOIN ON`, including `AND`/`OR`/`NOT` and parentheses. The temporary parser view substitutes `TRUE` for recognized templates; copied text preserves the original template unchanged. Templates in strings/comments are left alone; unknown template forms and nonpredicate positions remain unsupported. Template expansion is neither executed nor validated. SQL strings and `COMMENT` clauses are code rather than removable comments.
+
+Direct, unqualified `stack(...)` calls in a `SELECT` list support Hive-style multi-column `AS (col1, col2, ...)` aliases. Calls and alias lists may span lines and contain comments. Aliases must be bare ASCII identifiers or double-quoted or backtick-quoted identifiers.
+
+For validation, the temporary parser view keeps the first alias and checks the remaining identifiers. The original alias text, UTF-8, and line breaks are preserved apart from configured comment removal. Syntax-error checks still apply. This adaptation does not accept other functions, qualified calls such as `db.stack`, alias expressions, or incomplete lists.
+
+Other tested extensions are deliberately finite:
+
+| Form | Supported boundary |
+| --- | --- |
+| Hive expressions | `RLIKE`, `NOT RLIKE`, `<=>`, and unary negative operands such as `f(-pmod(x, y))`. Operators and complete operands must match the validated syntax tree. |
+| Hive table expansion | `LATERAL VIEW explode(array(...)) table_alias AS column_alias` in a `FROM` clause, with one column alias. This does not extend other UDTFs, `OUTER`, or general `array(...)` usage. |
+| Doris `CREATE TABLE` | A parser-supported column body, optional `ENGINE=OLAP`, then optional `DUPLICATE KEY`, quoted table `COMMENT`, explicit range partitions `VALUES [(lower), (upper))`, `DISTRIBUTED BY HASH` with optional positive integer `BUCKETS`, and quoted `PROPERTIES` pairs, in that order. Referenced key/partition/hash columns must be declared. |
+| Doris `SHOW ALTER TABLE COLUMN` | Optional `FROM database`, comparisons on named status fields in `WHERE`, `ORDER BY` job fields, and `LIMIT count`. Filters accept literal values and `AND`/`OR`/`NOT`/parentheses; arbitrary expressions and limit offsets are not supported. See `:help clean-copy-sql` for fields. |
+
+These are tested subsets of the official Doris [CREATE TABLE](https://doris.apache.org/docs/4.x/sql-manual/sql-statements/table-and-view/table/CREATE-TABLE/) and [SHOW ALTER](https://doris.apache.org/docs/4.x/sql-manual/sql-statements/table-and-view/table/SHOW-ALTER-TABLE/) syntax. Property meanings, database state, and execution results are not validated.
+
+The parser view preserves byte offsets and line breaks. The copied SQL keeps its original tokens; only removable comments change. Invalid adapted aliases anywhere in the buffer abort copying, even outside the selection. The same whole-buffer structural validation applies to adapted Hive operators, `LATERAL VIEW`, and Doris clauses, because malformed boundaries can affect a later selection; ordinary unrelated syntax errors retain the selection-scoped behavior described below. The plugin is neither a formatter nor a database validator.
 
 ## Examples
 
@@ -283,7 +300,7 @@ Use `:checkhealth clean_copy` to inspect the Neovim version, current filetype/ro
 | Parser installation dependency or argument failure | Check `parser_languages`, install the optional main-branch backend and required tools, then explicitly retry `CopyCleanParsers`. |
 | Parser installer busy or failed | Wait for the tracked operation; inspect `:messages` and `:checkhealth nvim-treesitter`. If completion is unknown, restart Neovim before retrying. Some selected parsers may have completed. |
 | Query load/parse failure | Verify plugin files and parser compatibility; restore matching queries/parsers. |
-| Relevant syntax ERROR/MISSING | Fix the reported source position or select an unrelated valid region. |
+| Relevant syntax ERROR/MISSING | Check the reported source position and documented dialect subset. Invalid adaptations or unterminated SQL quotes/comments may also block a later selection. |
 | Buffer changed while copying | Remove side effects from callbacks and retry against a stable buffer. |
 | Register or clipboard failure | Read the report's actual write/rollback state; fix the provider or choose a local target. |
 
@@ -299,8 +316,9 @@ The returned `report` contains `code`, `stage`, `message`, `level`, and applicab
 - No formatting or regular-expression fallback. Relevant Tree-sitter ERROR/MISSING nodes stop copying, including zero-width missing nodes at a selection boundary.
 - C/C++ opaque macro arguments containing `//` or `/*` are conservatively rejected, including URL-like macro strings.
 - HTML/Vue comment removal that could join a character entity is rejected. Preserve an involved comment with `directive_rules` or select a different region. JSX containers retain braces when removal could alter text/entity boundaries.
-- SQL uses the intended locked [DerekStride/tree-sitter-sql](https://github.com/DerekStride/tree-sitter-sql) grammar. Tests cover selected SELECT syntax, quoted identifiers, doubled quotes, PostgreSQL E/dollar strings, MySQL backticks, and special-comment retention; they do not execute queries against databases. MySQL `#` comments and nested SQL block comments are unsupported. Complete SQL dialect coverage, SQL Server bracket identifiers, and Oracle q-quotes are unverified.
-- The current SQL grammar rejects Doris/Palo `DUPLICATE KEY`, table `COMMENT`, partition definitions using `[lower, upper)` intervals, `DISTRIBUTED`, `PROPERTIES`, and `SHOW ALTER TABLE`. Known rejected Hive forms include multi-column `AS` aliases for `stack`, `RLIKE`, `<=>`, `INSERT OVERWRITE`, and some unary-negative function arguments. Other Hive-compatible syntax can still copy when the grammar parses it.
+- SQL uses the intended locked [DerekStride/tree-sitter-sql](https://github.com/DerekStride/tree-sitter-sql) grammar plus the finite adaptations above. MySQL `#` comments and nested SQL block comments are unsupported. Complete SQL dialect coverage, SQL Server bracket identifiers, and Oracle q-quotes are unverified.
+- Unknown Doris clause forms or expressions, other Hive UDTFs, `LATERAL VIEW OUTER`, general `array(...)` usage, and `INSERT OVERWRITE` remain unsupported when the parser cannot validate them. Supported property syntax does not imply validation of server property names or values.
+- Unterminated SQL quotes, dollar strings, or block comments extending into the selection are rejected, even without a dialect adaptation. Quoted-token boundaries follow the locked parser; an engine's different escape rules are not assumed.
 - A narrow SQL exception permits selecting one error-free top-level statement when the parser inserts a missing batch semicolon between it and another statement. Selecting both statements or a missing separator inside a block still fails. No semicolon is inserted and no fragment is reparsed.
 - Directive recognition is finite. Correct deletion with supported syntax is not a proof of equivalent behavior under every compiler or external tool.
 - Older Neovim versions, other parser revisions/platforms, and desktop clipboard services need separate verification.
@@ -321,7 +339,7 @@ make test-integration  # Requires project test parsers
 make test-fixtures     # Optional local SQL fixture audit
 ```
 
-`make test` runs both groups. Integration tests first check the project runtime and fail with an actionable list if parsers are missing; dependencies are never installed automatically and valid assertions are not skipped.
+`make test` runs both groups. Integration tests first check the project runtime and fail with an actionable list if parsers are missing; dependencies are never installed automatically and valid assertions are not skipped. The default integration run includes focused SQL expression, Doris, lateral-view, and safety suites in `tests/sql_expr.lua`, `tests/sql_doris.lua`, `tests/sql_lateral.lua`, and `tests/sql_safety.lua`.
 
 `make test-fixtures` reads optional local `fixtures/sql/*.sql` files after the isolated SQL parser has been prepared. This directory is ignored by Git, and the standard `make test` does not depend on it. The audit checks comment removal, retained SQL tokens/templates, and register/buffer protection; it does not run SQL against a database or validate template expansion. Reports are written to `.test/local-fixtures/report.json`, with successful cleaned copies under `.test/local-fixtures/cleaned/`. Missing fixtures or any failed file produce a nonzero exit status.
 

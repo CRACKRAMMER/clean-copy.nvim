@@ -319,19 +319,32 @@ Character entities
     Retain an involved comment with directive_rules or choose another region.
     JSX containers keep braces when removal could alter text/entity boundaries.
 
-SQL
+SQL                                                        *clean-copy-sql*
     Uses the DerekStride/tree-sitter-sql grammar and intended locked revision
     from tests/parsers.lock.json, not an arbitrary parser named sql. Fixtures
-    cover selected SELECT strings/identifiers, doubled quotes, PostgreSQL
+    cover selected SELECT strings/identifiers, single-quote doubling, PostgreSQL
     E/dollar strings, MySQL backticks, and retention of /*! */, /*M! */ and
-    /*+ */. Executable comment contents stay opaque. No database execution is
-    tested. MySQL # comments and nested SQL block comments are unsupported.
+    /*+ */. Executable comment contents stay opaque. MySQL # comments and
+    nested SQL block comments are unsupported.
     Complete dialect support, SQL Server brackets and Oracle q-quotes are
     unverified.
 
-    The parser recognizes multiline stack(...) calls, including comments
-    between arguments. Hive's multi-column AS (col1, col2, ...) aliases remain
-    unsupported in both single-line and multiline queries.
+    Direct, unqualified stack(...) calls in a SELECT list support Hive-style
+    multi-column AS (col1, col2, ...) aliases. Calls and alias lists may span
+    lines and contain comments. Aliases must be bare ASCII identifiers or
+    double-quoted or backtick-quoted identifiers.
+
+    For validation, the temporary parser view keeps the first alias and checks
+    the remaining identifiers. The original alias text, UTF-8, and line breaks
+    are preserved apart from configured comment removal. Syntax-error checks
+    still apply. This adaptation does not accept other functions, qualified
+    calls such as db.stack, alias expressions, or incomplete lists.
+
+    Invalid adapted aliases anywhere in the buffer abort copying, even outside
+    the selection. The same whole-buffer structural validation applies to
+    adapted Hive operators, LATERAL VIEW and Doris clauses, because malformed
+    boundaries can affect a later selection; ordinary unrelated syntax errors
+    retain the selection-scoped behavior described in |clean-copy-failures|.
 
     BI condition templates support these precise forms:
         {identifier [conditions.identifier]}
@@ -344,12 +357,56 @@ SQL
     is neither executed nor validated. SQL strings and COMMENT clauses are
     code rather than removable comments; unsupported syntax stops copying.
 
-    The current grammar rejects Doris/Palo DUPLICATE KEY, table COMMENT,
-    partition definitions using [lower, upper) intervals, DISTRIBUTED,
-    PROPERTIES and SHOW ALTER TABLE. Known
-    rejected Hive forms include multi-column AS aliases for stack, RLIKE,
-    <=>, INSERT OVERWRITE and some unary-negative function arguments. Other
-    Hive-compatible syntax can still copy when the grammar parses it.
+    Hive expressions
+        RLIKE, NOT RLIKE, <=> and unary negative operands such as
+        f(-pmod(x, y)) are supported. Operators and complete operands must match
+        the validated syntax tree. Native supported expressions are retained.
+
+    Hive table expansion
+        LATERAL VIEW explode(array(...)) table_alias AS column_alias
+        is supported in a FROM clause, with one column alias. This does not
+        extend other UDTFs, OUTER, or general array(...) usage.
+
+    Doris CREATE TABLE
+        Supports a parser-valid column body, optional ENGINE=OLAP, followed by
+        these optional clauses in this order:
+          DUPLICATE KEY (columns)
+          COMMENT 'quoted text'
+          PARTITION BY RANGE (columns) (
+            PARTITION name VALUES [(lower), (upper)), ...
+          )
+          DISTRIBUTED BY HASH (columns) [BUCKETS positive_integer]
+          PROPERTIES ('quoted key' = 'quoted value', ...)
+        Literal partition-bound counts must match the partition column count.
+        Key/partition/hash columns must be declared. Quoted property syntax is
+        checked; property meanings and database state are not validated.
+
+    Doris SHOW ALTER TABLE COLUMN
+        Supports optional FROM database, WHERE, ORDER BY and LIMIT count, in
+        that order. WHERE accepts comparisons (=, !=, <>, <, <=, >, >=, LIKE)
+        between named status fields and literals, with AND/OR/NOT/parentheses.
+        Filter fields: TableName, CreateTime, FinishTime, FinishedTime, State.
+        ORDER BY accepts ASC/DESC and JobId, TableName, CreateTime, FinishedTime,
+        IndexName, IndexId, OriginIndexId, SchemaVersion, TransactionId, State,
+        Msg, Progress or Timeout. LIMIT requires a nonnegative integer;
+        expressions, arbitrary fields and limit offsets are not supported.
+
+    These are finite subsets of the official Doris syntax:
+    https://doris.apache.org/docs/4.x/sql-manual/sql-statements/table-and-view/table/CREATE-TABLE/
+    https://doris.apache.org/docs/4.x/sql-manual/sql-statements/table-and-view/table/SHOW-ALTER-TABLE/
+
+    The parser view preserves byte offsets and line breaks. The copied SQL
+    keeps its original tokens; only removable comments change. The plugin is
+    neither a formatter nor a database validator and does not execute SQL.
+    Unknown Doris clause forms or expressions, other Hive UDTFs,
+    LATERAL VIEW OUTER, general array(...) usage and INSERT OVERWRITE remain
+    unsupported when the parser cannot validate them. Complete dialect support
+    is not claimed.
+
+    Unterminated SQL quotes, dollar strings or block comments extending into
+    the selection are rejected, even without a dialect adaptation. Quoted-token
+    boundaries follow the locked parser; different engine escape rules are not
+    assumed.
 
 C/C++
     Selected opaque preproc_arg nodes containing // or /* are conservatively
@@ -380,7 +437,9 @@ Installer busy/failure: wait, inspect :messages and :checkhealth nvim-treesitter
 then retry affected languages; installation may have partially completed. If
 completion is unknown, restart Neovim before retrying.
 Query: check plugin files and compatibility with the installed parser.
-Syntax: fix the reported original 1-based row/byte column or change selection.
+Syntax: check the reported original 1-based row/byte column and dialect subset.
+Invalid adaptations and unterminated SQL quotes/comments can block a later
+selection.
 Buffer changed: remove callback side effects and retry against a stable buffer.
 Register/clipboard: inspect actual write/rollback state before retrying.
 
@@ -424,6 +483,9 @@ Unit tests require no parser binaries. Integration tests require project test
 parsers; a preflight check fails with a clear dependency list when missing.
 make test runs both groups. No dependencies are installed automatically, and
 valid assertions are not skipped to accommodate missing parsers.
+Default integration coverage includes tests/sql_expr.lua, tests/sql_doris.lua,
+tests/sql_lateral.lua and tests/sql_safety.lua for expression, Doris,
+lateral-view and safety checks.
 
 make test-fixtures reads optional local fixtures/sql/*.sql files after the
 isolated SQL parser has been prepared. This directory is ignored by Git;

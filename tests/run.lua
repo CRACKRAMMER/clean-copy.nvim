@@ -245,17 +245,17 @@ test('SQL condition template command keeps source and linewise register behavior
   eq(vim.fn.undotree(), undo)
   eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text)
 end)
-test('SQL parser dialect limitations report WARN and protect buffer and registers', function()
+test('unsupported or malformed SQL dialect syntax reports WARN without writes', function()
   for _, text in ipairs({
-    'CREATE TABLE demo (id BIGINT) ENGINE=OLAP DUPLICATE KEY(id);',
-    'CREATE TABLE demo (id BIGINT) ENGINE=OLAP COMMENT "docs";',
-    'CREATE TABLE demo (id BIGINT) PARTITION BY RANGE(id) (PARTITION p1 VALUES [("1"),("2")));',
-    'CREATE TABLE demo (id BIGINT) DISTRIBUTED BY HASH(id) BUCKETS 1;',
-    'CREATE TABLE demo (id BIGINT) PROPERTIES ("replication_num"="1");',
-    "SHOW ALTER TABLE COLUMN WHERE TableName='demo';",
-    "SELECT stack(2,'a',1,'b',2) AS (name,count);",
-    "SELECT x FROM t WHERE x RLIKE 'a';", 'SELECT x FROM t JOIN u ON t.x <=> u.x;',
-    'SELECT f(-a) FROM t;', 'INSERT OVERWRITE TABLE t SELECT 1;',
+    'CREATE TABLE demo (id BIGINT) ENGINE=OLAP DUPLICATE KEY(id+1);',
+    'CREATE TABLE demo (id BIGINT) ENGINE=OLAP COMMENT;',
+    'CREATE TABLE demo (id BIGINT) PARTITION BY RANGE(id) (PARTITION p1 VALUES [("1"),("2")]);',
+    'CREATE TABLE demo (id BIGINT) DISTRIBUTED BY HASH(id) BUCKETS 0;',
+    'CREATE TABLE demo (id BIGINT) PROPERTIES ("replication_num"=);',
+    "SHOW ALTER TABLE COLUMN WHERE TableName=;",
+    "SELECT stack(2,'a',1,'b',2) AS (name+1,count);",
+    "SELECT x FROM t WHERE x RLIKE ;", 'SELECT x FROM t JOIN u ON t.x <=>;',
+    'SELECT f(-) FROM t;', 'INSERT OVERWRITE TABLE t SELECT 1;',
   }) do
     buffer(text .. ' -- remove', 'sql')
     vim.fn.setreg('a', 'sentinel', 'v')
@@ -288,25 +288,19 @@ local stack_layouts = {
 for _, layout in ipairs(stack_layouts) do
   for _, alias in ipairs({ { name = 'no alias', suffix = ';' },
     { name = 'single alias', suffix = ' AS result;' },
-    { name = 'unsupported multi-column alias', suffix = ' AS (\n  label,\n  amount\n);', rejected = true },
+    { name = 'multi-column alias', suffix = ' AS (\n  label,\n  amount\n);' },
   }) do
     test('SQL stack ' .. layout.name .. ', ' .. alias.name, function()
       local text = 'SELECT ' .. layout.body .. alias.suffix .. ' -- remove tail'
       buffer(text, 'sql')
       vim.fn.setreg('a', 'stack sentinel', 'v')
-      local before, tick = vim.fn.getreginfo('a'), vim.api.nvim_buf_get_changedtick(0)
+      local tick = vim.api.nvim_buf_get_changedtick(0)
       local undo, modified, count = vim.fn.undotree(), vim.bo.modified, #messages
       local ok, _, report = plugin.copy()
-      if alias.rejected then
-        assert(not ok, 'multi-column alias unexpectedly supported; review its coverage')
-        eq(report.code, 'SYNTAX'); eq(report.level, vim.log.levels.WARN)
-        eq(vim.fn.getreginfo('a'), before)
-      else
-        assert(ok, report.message)
-        eq(report.code, 'OK'); eq(report.level, vim.log.levels.INFO)
-        eq(vim.fn.getreg('a'), 'SELECT ' .. (layout.expected or layout.body) .. alias.suffix .. '  \n')
-        eq(vim.fn.getregtype('a'), 'V')
-      end
+      assert(ok, report.message)
+      eq(report.code, 'OK'); eq(report.level, vim.log.levels.INFO)
+      eq(vim.fn.getreg('a'), 'SELECT ' .. (layout.expected or layout.body) .. alias.suffix .. '  \n')
+      eq(vim.fn.getregtype('a'), 'V')
       eq(#messages, count + 1)
       eq(vim.api.nvim_buf_get_changedtick(0), tick)
       eq(vim.fn.undotree(), undo); eq(vim.bo.modified, modified)
@@ -321,13 +315,98 @@ test('SQL stack with 448 rows and nine columns retains every multiline argument'
     for column = 1, 9 do values[column] = string.format("'row%d_col%d'", row, column) end
     rows[row] = '  ' .. table.concat(values, ', ')
   end
-  local text = 'SELECT stack(\n  448,\n' .. table.concat(rows, ',\n') .. '\n);'
+  local text = 'SELECT stack(\n  448,\n' .. table.concat(rows, ',\n')
+    .. '\n) AS (col1, col2, col3, col4, col5, col6, col7, col8, col9);'
   buffer(text .. ' -- remove', 'sql')
   local tick = vim.api.nvim_buf_get_changedtick(0)
   local ok, _, report = plugin.copy()
   assert(ok, report.message)
   eq(vim.fn.getreg('a'), text .. '  \n')
   eq(vim.api.nvim_buf_get_changedtick(0), tick)
+end)
+test('SQL stack alias comments are removed while quoted markers and directives survive', function()
+  local text = "SELECT stack(1, 'a--b', 'c/*d*/', 3) AS (\n"
+    .. '  -- remove before\n  "-- first", /* remove middle */\n'
+    .. '  `中文/* identifier */`,\n  "last" /*+ KEEP */\n); -- remove tail'
+  eq(clean(text, 'sql'), "SELECT stack(1, 'a--b', 'c/*d*/', 3) AS (\n"
+    .. '  "-- first",  \n  `中文/* identifier */`,\n  "last" /*+ KEEP */\n);  ')
+end)
+test('SQL stack aliases preserve case, trivia and repeated calls in CTEs', function()
+  local text = 'WITH one AS (SELECT sTaCk(1, 1, 2) /* remove */ aS /* remove */ (a, b)),\n'
+    .. 'two AS (SELECT stack(1, 3, 4) AS (c, d)),\n'
+    .. 'three AS (SELECT stack(1, 5, 6) AS (e, f))\nSELECT * FROM one;'
+  eq(clean(text, 'sql'), text:gsub('/%* remove %*/', ' '))
+end)
+test('SQL stack alias adaptation keeps unrelated syntax failures visible', function()
+  local text = 'SELECT stack(1, 1, 2) AS (a, b); -- remove\nSELECT * FROM ;'
+  local snap = snapshot(text)
+  eq(clean(text, 'sql', nil, selection.lines(snap, 1, 1)), 'SELECT stack(1, 1, 2) AS (a, b);  ')
+  local ok, report = pcall(clean, text, 'sql')
+  assert(not ok); eq(report.code, 'SYNTAX')
+end)
+test('SQL stack alias line and Visual selections retain original coordinates', function()
+  local text = 'SELECT stack(1, 1, 2) AS (\n  a, -- remove\n  b\n);'
+  buffer(text, 'sql')
+  local tick = vim.api.nvim_buf_get_changedtick(0)
+  vim.cmd('2,3CopyClean')
+  eq(vim.fn.getreg('a'), '  a,  \n  b\n')
+  eq(vim.fn.getregtype('a'), 'V')
+  keys('ggV3j')
+  local ok, _, report = plugin.copy()
+  assert(ok, report.message)
+  eq(vim.fn.getreg('a'), 'SELECT stack(1, 1, 2) AS (\n  a,  \n  b\n);\n')
+  eq(vim.fn.mode(), 'n')
+  eq(vim.api.nvim_buf_get_changedtick(0), tick)
+  eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text)
+end)
+test('SQL stack alias adapter rejects malformed names, calls and contexts without writes', function()
+  local call = "stack(2, 'a', 1, 'b', 2)"
+  for _, text in ipairs({
+    "SELECT f(2, 'a', 1, 'b', 2) AS (a, b);",
+    'SELECT db.' .. call .. ' AS (a, b);',
+    "SELECT stack(2, 'a',, 'b', 2) AS (a, b);",
+    'SELECT ' .. call .. ' AS (a+1, b);', 'SELECT ' .. call .. " AS (a, 'b');",
+    'SELECT ' .. call .. ' AS (a,);', 'SELECT ' .. call .. ' AS ();',
+    'SELECT ' .. call .. ' AS (a, (b));', 'SELECT ' .. call .. ' AS (a b);',
+    'SELECT ' .. call .. ' AS (a, 2);',
+    [[SELECT stack(2,1,2) AS (a, "x\"; SELECT 1 AS c --"); -- remove]],
+    'SELECT stack(2,1,2) AS (a, `x\\`; SELECT 1 AS c --`); -- remove',
+    [[SELECT stack(2,1,2) AS (a, "x\"; SELECT stack(2,3,4) AS (b,c); --"); -- remove]],
+    'SELECT ' .. call .. ' AS (a, b;', 'SELECT ' .. call .. ' AS (a, "unterminated);',
+    'SELECT ' .. call .. ' AS (a, /* unterminated',
+    'SELECT ' .. call .. ' AS (a, b) + 1;',
+    'SELECT x FROM t WHERE ' .. call .. ' AS (a, b);',
+    'SELECT f(' .. call .. ' AS (a, b));',
+    'SELECT 1+' .. call .. ' AS (a, b);',
+    'SELECT (' .. call .. ') AS (a, b);',
+  }) do
+    buffer(text, 'sql')
+    vim.fn.setreg('a', 'alias sentinel', 'v')
+    local before, tick, undo = vim.fn.getreginfo('a'), vim.api.nvim_buf_get_changedtick(0), vim.fn.undotree()
+    local count = #messages
+    local ok, _, report = plugin.copy()
+    assert(not ok, 'unexpected acceptance: ' .. text)
+    eq(report.code, 'SYNTAX'); eq(report.level, vim.log.levels.WARN)
+    eq(#messages, count + 1); eq(vim.fn.getreginfo('a'), before)
+    eq(vim.api.nvim_buf_get_changedtick(0), tick); eq(vim.fn.undotree(), undo)
+    eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text)
+  end
+end)
+test('SQL unselected malformed stack aliases cannot change later Visual comment scope', function()
+  local text = [[SELECT stack(2,1,2) AS (a, "x\"; SELECT 1 AS c --"); SELECT 2; -- remove]]
+  buffer(text, 'sql')
+  vim.fn.setreg('a', 'scope sentinel', 'v')
+  local before, tick, undo = vim.fn.getreginfo('a'), vim.api.nvim_buf_get_changedtick(0), vim.fn.undotree()
+  local first = assert(text:find('SELECT 2', 1, true))
+  keys('gg0' .. (first - 1) .. 'lv$')
+  local ok, _, report = plugin.copy()
+  assert(not ok)
+  eq(report.code, 'SYNTAX'); eq(report.level, vim.log.levels.WARN)
+  eq(vim.fn.getreginfo('a'), before)
+  eq(vim.fn.mode(), 'v')
+  eq(vim.api.nvim_buf_get_changedtick(0), tick); eq(vim.fn.undotree(), undo)
+  eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text)
+  keys('<Esc>')
 end)
 for _, motion in ipairs({'ggV2j', 'gg2jVgg', 'gg0v2j$', 'gg2j$vgg0'}) do
   test('SQL single block native Visual selection ' .. motion, function()

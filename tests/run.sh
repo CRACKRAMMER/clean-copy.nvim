@@ -35,6 +35,10 @@ if [ "$mode" = unit ]; then exit 0; fi
 # one actionable failure instead of dozens of misleading regression failures.
 nvim --clean --headless -l tests/check_parsers.lua
 nvim --clean --headless -l tests/run.lua
+nvim --clean --headless -l tests/sql_expr.lua
+nvim --clean --headless -l tests/sql_doris.lua
+nvim --clean --headless -l tests/sql_lateral.lua
+nvim --clean --headless -l tests/sql_safety.lua
 mkdir -p .test/missing-runtime/parser
 for lang in html vue php; do
   ln -sf "$PWD/.test/runtime/parser/$lang.so" ".test/missing-runtime/parser/$lang.so"

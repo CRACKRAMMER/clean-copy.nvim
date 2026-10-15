@@ -1,6 +1,10 @@
 local selection = require('clean_copy.selection')
 local rules = require('clean_copy.rules')
 local sql = require('clean_copy.sql')
+local sql_lex = require('clean_copy.sql_lex')
+local sql_expr = require('clean_copy.sql_expr')
+local sql_doris = require('clean_copy.sql_doris')
+local sql_lateral = require('clean_copy.sql_lateral')
 local errors = require('clean_copy.errors')
 local M = {}
 local root_dir = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':h:h:h')
@@ -232,8 +236,8 @@ function M.collect(snapshot, sel, lang, opts)
     end)
   end
   local function run()
-    -- Parse the entire snapshot, never the selected fragment. SQL predicate
-    -- templates use equal-length surrogates; captures still read original text.
+    -- Parse the entire snapshot, never the selected fragment. SQL adapters keep
+    -- byte coordinates intact; captures and copied output read original text.
     -- Private injection queries keep user highlighting and string injections out of this operation.
     local initial
     if lang == 'html' or lang == 'vue' or lang == 'php' then
@@ -276,8 +280,57 @@ function M.collect(snapshot, sel, lang, opts)
       end
     end
     local source, templates = snapshot.text, {}
-    if lang == 'sql' then source, templates = sql.parser_view(source) end
+    local expr_meta, doris_meta, lateral_meta, original_lex
+    local function parse_sql(check_source) return parser(check_source, 'sql', injections) end
+    if lang == 'sql' then
+      original_lex = sql_lex.scan(source)
+      for _, problem in ipairs(original_lex.problems) do
+        if overlaps({ problem.start, problem.finish }, sel) then
+          errors.raise('SYNTAX', 'parser', 'syntax ERROR/MISSING: ' .. problem.message, {
+            context = { language = 'sql', byte = problem.start + 1 },
+            hint = 'Close SQL quotes/comments or select a region outside their lexical scope.',
+          })
+        end
+      end
+      source, templates = sql.parser_view(source, original_lex)
+      source, expr_meta = sql_expr.prepare(source, snapshot, sql_lex.scan(source), parse_sql)
+      source, doris_meta = sql_doris.prepare(source, snapshot, sql_lex.scan(source), parse_sql)
+      source, lateral_meta = sql_lateral.prepare(source, snapshot, sql_lex.scan(source), parse_sql)
+      sql_lex.validate_layout(snapshot.text, source)
+    end
     local complete = parser(source, lang, injections)
+    local aliases = {}
+    if lang == 'sql' then
+      -- Error recovery can hide a later stack call behind an earlier alias
+      -- error. Each pass removes newly confirmed list punctuation only, so the
+      -- process is bounded by the original source's finite alias lists.
+      while true do
+        local batch = {}
+        complete:for_each_tree(function(tree)
+          walk(tree:root(), function(node)
+            local alias = sql.stack_alias(node, snapshot, source)
+            if alias then batch[#batch + 1] = alias end
+          end)
+        end)
+        if #batch == 0 then break end
+        for _, alias in ipairs(batch) do aliases[#aliases + 1] = alias end
+        source = sql.alias_view(source, batch, aliases)
+        complete = parser(source, lang, injections)
+      end
+      sql_lex.validate_layout(snapshot.text, source)
+      if source ~= snapshot.text then
+        local final_lex = sql_lex.scan(source)
+        local same_comments = vim.deep_equal(original_lex.comments, final_lex.comments)
+        if #original_lex.problems > 0 or #final_lex.problems > 0 or not same_comments then
+          local problem = original_lex.problems[1] or final_lex.problems[1]
+          errors.raise('SYNTAX', 'parser', problem and ('syntax ERROR/MISSING: ' .. problem.message)
+              or 'SQL adaptation changed comment boundaries', {
+            context = { language = 'sql', byte = problem and problem.start + 1 or nil },
+            hint = 'Check complete SQL quotes and comment boundaries before copying this dialect syntax.',
+          })
+        end
+      end
+    end
     local removals, protected, containers, syntax_errors = {}, {}, {}, {}
     complete:for_each_tree(function(tree, ltree)
       local language = ltree:lang()
@@ -291,7 +344,19 @@ function M.collect(snapshot, sel, lang, opts)
       end
       if language == lang then relevant = true end
       if not relevant then return end
-      if language == 'sql' then sql.validate_templates(tree:root(), snapshot, templates, sel) end
+      if language == 'sql' then
+        sql_expr.validate(tree:root(), snapshot, expr_meta, parse_sql)
+        sql_doris.validate(tree:root(), snapshot, doris_meta, parse_sql)
+        sql_lateral.validate(tree:root(), snapshot, lateral_meta, parse_sql)
+        sql.validate_templates(tree:root(), snapshot, templates, sel)
+        sql.validate_aliases(tree:root(), snapshot, aliases, function(check_source, expected)
+          local valid = true
+          parser(check_source, 'sql', injections):for_each_tree(function(check_tree)
+            if not sql.valid_alias_names(check_tree:root(), check_source, expected) then valid = false end
+          end)
+          return valid
+        end)
+      end
       captures(tree, language, 'clean_copy', function(capture, node)
         local r = range(node, snapshot)
         if not overlaps(r, sel) then return end

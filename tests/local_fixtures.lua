@@ -119,15 +119,22 @@ local function context(lines, first, last)
   return result
 end
 
-local function syntax_diagnostics(text, lines)
-  local parser, diagnostics = nil, { count = 0, nodes = {} }
+-- This is a separate grammar probe, not CopyClean's validated syntax tree. Keep
+-- its errors for parser compatibility investigation without duplicating the
+-- plugin's iterative stack alias adapter or treating them as copy failures.
+local function raw_syntax_diagnostics(text, lines)
+  local parser, diagnostics = nil, {
+    count = 0, nodes = {}, parse_view = 'original-source', stack_alias_adapter = false, dialect_adapters = false,
+    authoritative = false,
+    description = 'Raw SQL grammar probe; excludes stack, Hive and Doris adapters. See report for the actual CopyClean result.',
+  }
   local ok, reason = pcall(function()
     local parse_text = text
     local sql = require('clean_copy.sql')
     if type(sql.parser_view) == 'function' then
       local templates
       parse_text, templates = sql.parser_view(text)
-      diagnostics.parse_view = true
+      diagnostics.parse_view = 'bi-condition-templates-only'
       diagnostics.template_count = type(templates) == 'table' and #templates or tonumber(templates) or 0
     end
     parser = vim.treesitter.get_string_parser(parse_text, 'sql', { injections = { sql = '' } })
@@ -197,7 +204,7 @@ for _, path in ipairs(paths) do
     notifications, active_report = {}, nil
     local executed, command_reason = pcall(vim.cmd.CopyClean)
     entry.report, entry.notifications = public_report(active_report), notifications
-    entry.syntax = syntax_diagnostics(source, original_lines)
+    entry.raw_syntax = raw_syntax_diagnostics(source, original_lines)
     equal(vim.api.nvim_get_current_buf(), buf, 'current buffer changed')
     equal(vim.api.nvim_get_current_win(), win, 'current window changed')
     equal(vim.api.nvim_buf_get_lines(buf, 0, -1, true), original_lines, 'source buffer content changed')

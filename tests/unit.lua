@@ -13,6 +13,7 @@ local comments = require('clean_copy.comments')
 local rules = require('clean_copy.rules')
 local plugin = require('clean_copy')
 local sql = require('clean_copy.sql')
+local sql_lex = require('clean_copy.sql_lex')
 local messages = {}
 vim.notify = function(message, level) messages[#messages + 1] = { message, level } end
 
@@ -60,6 +61,45 @@ test('SQL parser view rejects unknown modifiers, nesting and hidden comment payl
     local text = 'SELECT * FROM t WHERE ' .. template .. ';'
     local view, templates = sql.parser_view(text)
     eq(view, text); eq(#templates, 0)
+  end
+end)
+
+test('SQL dialect lexer keeps strings, arbitrary dollar tags and comment boundaries separate', function()
+  local source = [[SELECT E'\\', '-- literal', "/* identifier */", $tag!${x [conditions.x]} -- kept$tag!$;
+-- real line
+/* real block */]]
+  local scanned = sql_lex.scan(source)
+  eq(scanned.problems, {})
+  eq(#scanned.comments, 2)
+  eq(scanned.comments[1].text, '-- real line')
+  eq(scanned.comments[2].text, '/* real block */')
+  for _, token in ipairs(scanned.tokens) do
+    eq(source:sub(token.start + 1, token.finish), token.text)
+  end
+  eq(sql.parser_view(source), source)
+end)
+
+test('SQL dialect lexer records the full scope of unterminated quotes and comments', function()
+  for _, source in ipairs({ "SELECT 'unclosed\nSELECT 2;", 'SELECT /* unclosed\nSELECT 2;',
+    'SELECT $tag!$unclosed\nSELECT 2;' }) do
+    local scanned = sql_lex.scan(source)
+    assert(#scanned.problems > 0)
+    eq(scanned.problems[1].start, #'SELECT ')
+    eq(scanned.problems[1].finish, #source)
+  end
+end)
+
+test('SQL dialect edits preserve bytes and CRLF coordinates and refuse unsafe overlaps', function()
+  eq(sql_lex.apply('abc\r\nxyz', {{start = 0, finish = 3}}), '   \r\nxyz')
+  for _, changes in ipairs({ {{start = 0, finish = 2}, {start = 1, finish = 3}},
+    {{start = 0, finish = 20}} }) do
+    local ok, err = pcall(sql_lex.apply, 'abc', changes)
+    assert(not ok); eq(err.code, 'SYNTAX')
+  end
+  for _, case in ipairs({ {'abc', {start = 0, finish = 3, text = 'longer'}},
+    {'a\nb', {start = 0, finish = 3, text = 'a b'}} }) do
+    local ok, err = pcall(sql_lex.apply, case[1], {case[2]})
+    assert(not ok); eq(err.code, 'INTERNAL')
   end
 end)
 
