@@ -52,7 +52,8 @@ h.test('SQL template and local fixture documentation agrees across README and he
     for _, required in ipairs({'temporary parser view substitutes TRUE',
       'preserves the original template unchanged',
       'Template expansion is neither executed nor validated',
-      'SQL strings and COMMENT clauses are code', 'nonzero exit status'}) do
+      'SQL strings and COMMENT clauses are code', 'nonzero exit status',
+      'multiline stack(...) calls', 'AS (col1, col2, ...)'}) do
       assert(normalized:find(required, 1, true), 'SQL documentation omits ' .. required)
     end
   end

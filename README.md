@@ -229,6 +229,8 @@ Script handling supports JavaScript/module MIME types and `lang="js"`/`lang="ts"
 
 SQL BI condition templates support the precise forms `{identifier [conditions.identifier]}` and `{identifier [conditions.identifier(number)]}` as boolean predicates in `WHERE`, `HAVING`, and `JOIN ON`, including `AND`/`OR`/`NOT` and parentheses. The temporary parser view substitutes `TRUE` for recognized templates; copied text preserves the original template unchanged. Templates in strings/comments are left alone; unknown template forms and nonpredicate positions remain unsupported. Template expansion is neither executed nor validated. SQL strings and `COMMENT` clauses are code rather than removable comments; unsupported syntax still stops copying.
 
+The parser recognizes multiline `stack(...)` calls, including comments between arguments. Hive's multi-column `AS (col1, col2, ...)` aliases remain unsupported in both single-line and multiline queries.
+
 ## Examples
 
 C input:

@@ -275,6 +275,60 @@ test('SQL Hive DDL and column COMMENT clauses remain code', function()
   local alter = "ALTER TABLE demo ADD COLUMN value DOUBLE NULL COMMENT '/* text */' AFTER id;"
   eq(clean(alter .. ' -- remove', 'sql'), alter .. '  ')
 end)
+local stack_layouts = {
+  { name = 'single line', body = "stack(2, 'one', 1, 'two', 2)" },
+  { name = 'multiple lines', body = "stack(\n  2,\n  'one', 1,\n  'two', 2\n)" },
+  { name = 'multiline comments and UTF-8 strings',
+    body = "stack(\n  2, -- remove line\n  '中文 -- string', /* remove block */ 1,\n"
+      .. "  -- remove whole line\n  'two /* string */', 2\n)",
+    expected = "stack(\n  2,  \n  '中文 -- string',   1,\n  'two /* string */', 2\n)" },
+  { name = 'newline before opening parenthesis and Tab indentation',
+    body = "stack\n(\n\t2,\n\t'one', 1,\n\t'two', 2\n)" },
+}
+for _, layout in ipairs(stack_layouts) do
+  for _, alias in ipairs({ { name = 'no alias', suffix = ';' },
+    { name = 'single alias', suffix = ' AS result;' },
+    { name = 'unsupported multi-column alias', suffix = ' AS (\n  label,\n  amount\n);', rejected = true },
+  }) do
+    test('SQL stack ' .. layout.name .. ', ' .. alias.name, function()
+      local text = 'SELECT ' .. layout.body .. alias.suffix .. ' -- remove tail'
+      buffer(text, 'sql')
+      vim.fn.setreg('a', 'stack sentinel', 'v')
+      local before, tick = vim.fn.getreginfo('a'), vim.api.nvim_buf_get_changedtick(0)
+      local undo, modified, count = vim.fn.undotree(), vim.bo.modified, #messages
+      local ok, _, report = plugin.copy()
+      if alias.rejected then
+        assert(not ok, 'multi-column alias unexpectedly supported; review its coverage')
+        eq(report.code, 'SYNTAX'); eq(report.level, vim.log.levels.WARN)
+        eq(vim.fn.getreginfo('a'), before)
+      else
+        assert(ok, report.message)
+        eq(report.code, 'OK'); eq(report.level, vim.log.levels.INFO)
+        eq(vim.fn.getreg('a'), 'SELECT ' .. (layout.expected or layout.body) .. alias.suffix .. '  \n')
+        eq(vim.fn.getregtype('a'), 'V')
+      end
+      eq(#messages, count + 1)
+      eq(vim.api.nvim_buf_get_changedtick(0), tick)
+      eq(vim.fn.undotree(), undo); eq(vim.bo.modified, modified)
+      eq(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, true), '\n'), text)
+    end)
+  end
+end
+test('SQL stack with 448 rows and nine columns retains every multiline argument', function()
+  local rows = {}
+  for row = 1, 448 do
+    local values = {}
+    for column = 1, 9 do values[column] = string.format("'row%d_col%d'", row, column) end
+    rows[row] = '  ' .. table.concat(values, ', ')
+  end
+  local text = 'SELECT stack(\n  448,\n' .. table.concat(rows, ',\n') .. '\n);'
+  buffer(text .. ' -- remove', 'sql')
+  local tick = vim.api.nvim_buf_get_changedtick(0)
+  local ok, _, report = plugin.copy()
+  assert(ok, report.message)
+  eq(vim.fn.getreg('a'), text .. '  \n')
+  eq(vim.api.nvim_buf_get_changedtick(0), tick)
+end)
 for _, motion in ipairs({'ggV2j', 'gg2jVgg', 'gg0v2j$', 'gg2j$vgg0'}) do
   test('SQL single block native Visual selection ' .. motion, function()
     buffer(sql_blocks, 'sql'); keys(motion)

@@ -329,6 +329,10 @@ SQL
     Complete dialect support, SQL Server brackets and Oracle q-quotes are
     unverified.
 
+    The parser recognizes multiline stack(...) calls, including comments
+    between arguments. Hive's multi-column AS (col1, col2, ...) aliases remain
+    unsupported in both single-line and multiline queries.
+
     BI condition templates support these precise forms:
         {identifier [conditions.identifier]}
         {identifier [conditions.identifier(number)]}
